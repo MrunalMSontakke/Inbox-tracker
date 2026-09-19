@@ -45,4 +45,5 @@ Template:
 - Why: Verification for restricted scopes is heavy and not needed for 10 users. Tradeoff: unverified-app warning and weekly re-login.
 - Alternatives considered: full verification.
 - AI involvement: Flagged the limits, I need to verify them in Google's docs.
+- what the Audience page says about testing-mode limits. That covers the "verify the limits" task too
 - Outcome:
