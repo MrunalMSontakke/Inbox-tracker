@@ -47,3 +47,17 @@ Template:
 - AI involvement: Flagged the limits, I need to verify them in Google's docs.
 - what the Audience page says about testing-mode limits. That covers the "verify the limits" task too
 - Outcome:
+
+### D6: Ask for Gmail access separately from sign-in (2026-09-19)
+- Decision: Sign-in requests only email and profile. Gmail read access is requested when the user clicks "Connect Gmail".
+- Why: Lower trust barrier at first contact. Users only grant the scary permission when they want the feature.
+- AI involvement: Suggested by Claude while planning the auth flow.
+- Outcome:
+
+### D7: Gmail tokens in memory for now (2026-09-19)
+- Decision: Keep Gmail tokens in a server-side Map for week 1. Move to Postgres with encryption in week 2.
+- Why: Gets a working end-to-end slice today. A real database comes with the sync worker anyway.
+- Alternatives considered: tokens in the session cookie (rejected, readable in the browser), a local file (rejected, secrets on disk).
+- Tradeoff: every server restart forces a reconnect. Fine for dev, not for users.
+- AI involvement: Claude suggested the in-memory bridge and flagged the restart problem.
+- Outcome:

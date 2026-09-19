@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 
-const API = "http://localhost:3000";
+const API = import.meta.env.PROD ? "" : "http://localhost:3000";
 type User = { id: string; email: string; name: string };
 type Latest = { from: string; subject: string; date: string } | null;
 
