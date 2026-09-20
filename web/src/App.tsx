@@ -63,8 +63,13 @@ const fullDate = (d: string) =>
   new Date(d).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 const isGhosted = (c: Card) => c.stage === "applied" && daysSince(c.appliedAt) >= GHOST_DAYS;
 
-const call = (path: string, init?: RequestInit) =>
-  fetch(API + path, { credentials: "include", ...init });
+// Every request carries our custom header; the API rejects state changes without it (CSRF defence)
+const call = (path: string, init: RequestInit = {}) =>
+  fetch(API + path, {
+    credentials: "include",
+    ...init,
+    headers: { "X-Requested-With": "inbox-tracker", ...(init.headers as Record<string, string> | undefined) },
+  });
 
 // ---------- App ----------
 
@@ -149,6 +154,16 @@ export default function App() {
   async function logout() {
     await call("/auth/logout", { method: "POST" });
     setUser(null);
+  }
+
+  async function deleteAccount() {
+    const ok = window.confirm(
+      "Delete all your data? This removes your board, disconnects Gmail and can't be undone."
+    );
+    if (!ok) return;
+    const r = await call("/api/account", { method: "DELETE" });
+    if (r.ok) setUser(null);
+    else alert("Something went wrong. Please try again.");
   }
 
   const visible = useMemo(() => {
@@ -243,6 +258,13 @@ export default function App() {
             )}
           </>
         )}
+
+        <footer className="mt-16 flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 pt-6 text-xs text-slate-400">
+          <span>We keep sender, subject and date only. Never email bodies. Gmail tokens are encrypted.</span>
+          <button onClick={deleteAccount} className="text-rose-600 hover:underline">
+            Delete my data
+          </button>
+        </footer>
       </main>
 
       {open && (

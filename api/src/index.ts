@@ -5,13 +5,23 @@ import cookieSession from "cookie-session";
 import crypto from "node:crypto";
 import { OAuth2Client, type Credentials } from "google-auth-library";
 import { Pool } from "pg";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import Anthropic from "@anthropic-ai/sdk";
+import { loadKey, seal, unseal, isSealed } from "./secrets";
 import { classify, classifyPreview, extractCompany, extractCompanyFromPreview, companyKey, isOutcomeSubject } from "./classify";
 
 const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, SESSION_SECRET, DATABASE_URL } = process.env;
+// (TOKEN_ENCRYPTION_KEY is checked below by loadKey)
 if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !SESSION_SECRET || !DATABASE_URL) {
   throw new Error("Missing env vars, check api/.env");
 }
+
+// Encrypts Gmail tokens at rest. Generate with: openssl rand -base64 32
+const TOKEN_KEY = loadKey(process.env.TOKEN_ENCRYPTION_KEY);
+
+// Log only the message: Google client errors can carry the request config, including auth headers
+const errMsg = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 const PUBLIC_URL = process.env.PUBLIC_URL;
 const IS_HTTPS = PUBLIC_URL?.startsWith("https://") ?? false;
@@ -27,7 +37,8 @@ const oauth = newOAuthClient();
 const anthropic = process.env.ANTHROPIC_API_KEY ? new Anthropic() : null;
 const AI_MODEL = "claude-haiku-4-5-20251001";
 
-const pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
+// Verify Neon's TLS certificate, so the connection can't be intercepted
+const pool = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: true } });
 
 // ---------- Database ----------
 
@@ -102,13 +113,26 @@ async function saveGmailTokens(userId: string, tokens: Credentials) {
   await pool.query(
     `INSERT INTO gmail_accounts (user_id, credentials) VALUES ($1, $2)
      ON CONFLICT (user_id) DO UPDATE SET credentials = EXCLUDED.credentials`,
-    [userId, tokens]
+    [userId, seal(tokens, TOKEN_KEY)]
   );
 }
 
 async function getGmailTokens(userId: string): Promise<Credentials | null> {
   const r = await pool.query(`SELECT credentials FROM gmail_accounts WHERE user_id = $1`, [userId]);
-  return r.rows[0]?.credentials ?? null;
+  const stored = r.rows[0]?.credentials;
+  if (!stored) return null;
+  if (!isSealed(stored)) {
+    // Saved before encryption existed: encrypt it now
+    await saveGmailTokens(userId, stored as Credentials);
+    return stored as Credentials;
+  }
+  try {
+    return unseal<Credentials>(stored, TOKEN_KEY);
+  } catch (err) {
+    // Wrong key or tampered data: treat as disconnected, the user can reconnect
+    console.error("Could not decrypt Gmail tokens:", errMsg(err));
+    return null;
+  }
 }
 
 // ---------- Gmail ----------
@@ -146,7 +170,7 @@ async function gmailClientFor(userId: string) {
   const client = newOAuthClient();
   client.setCredentials(tokens);
   client.on("tokens", (fresh) => {
-    saveGmailTokens(userId, { ...tokens, ...fresh }).catch(() => {});
+    saveGmailTokens(userId, { ...tokens, ...fresh }).catch((err) => console.error("Token refresh save failed:", errMsg(err)));
   });
   return client;
 }
@@ -225,14 +249,14 @@ async function syncUser(userId: string) {
   try {
     await secondPass(userId, client);
   } catch (err) {
-    console.error("Second pass failed", err);
+    console.error("Second pass failed:", errMsg(err));
   }
 
   // After the preview pass, so a clear "invite you to interview" first line always wins
   try {
     await bodyRejectionPass(userId, client);
   } catch (err) {
-    console.error("Body rejection pass failed", err);
+    console.error("Body rejection pass failed:", errMsg(err));
   }
   return ids.length;
 }
@@ -487,10 +511,10 @@ async function runWorker() {
           [job.id, found]
         );
       } catch (err) {
-        console.error("Sync failed", err);
+        console.error("Sync failed:", errMsg(err));
         await pool.query(
           `UPDATE sync_jobs SET status = 'failed', error = $2, finished_at = now() WHERE id = $1`,
-          [job.id, String(err)]
+          [job.id, errMsg(err)]
         );
       }
     }
@@ -502,7 +526,26 @@ async function runWorker() {
 // ---------- App ----------
 
 const app = express();
-app.set("trust proxy", 1);
+app.set("trust proxy", 1); // Render sits in front of us, so trust its X-Forwarded-* headers
+
+// Security headers. The CSP only allows scripts, styles and fonts from our own origin.
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"], // React inline style attributes (bar widths)
+        imgSrc: ["'self'", "data:"],
+        fontSrc: ["'self'", "data:"],
+        connectSrc: ["'self'"],
+        frameAncestors: ["'none'"],
+        formAction: ["'self'"],
+      },
+    },
+  })
+);
+
 app.use(cors({ origin: WEB_URL, credentials: true }));
 app.use(
   cookieSession({
@@ -514,6 +557,27 @@ app.use(
     maxAge: 7 * 24 * 60 * 60 * 1000,
   })
 );
+
+// Rate limits: slow down scripted abuse of sign-in and the API
+const limiterDefaults = { standardHeaders: "draft-7" as const, legacyHeaders: false };
+app.use("/auth", rateLimit({ ...limiterDefaults, windowMs: 15 * 60 * 1000, limit: 40 }));
+app.use("/api", rateLimit({ ...limiterDefaults, windowMs: 60 * 1000, limit: 120 }));
+const syncLimiter = rateLimit({
+  ...limiterDefaults,
+  windowMs: 60 * 60 * 1000,
+  limit: 20,
+  keyGenerator: (req) => req.session?.user?.id ?? "anonymous", // per user, not per IP
+});
+
+// CSRF defence in depth (on top of SameSite cookies): every state-changing request must carry
+// a custom header. Browsers won't let another site add it without a CORS preflight we'd refuse.
+app.use((req, res, next) => {
+  if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
+  if (req.get("X-Requested-With") !== "inbox-tracker") {
+    return res.status(403).json({ error: "Missing request header" });
+  }
+  next();
+});
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
@@ -572,7 +636,7 @@ app.get("/api/me", async (req, res) => {
 });
 
 // Queue a sync. Returns immediately, the worker does the slow part.
-app.post("/api/sync", async (req, res) => {
+app.post("/api/sync", syncLimiter, async (req, res) => {
   const user = req.session?.user;
   if (!user) return res.status(401).json({ error: "Not signed in" });
   const active = await pool.query(
@@ -582,7 +646,7 @@ app.post("/api/sync", async (req, res) => {
   if (active.rows.length === 0) {
     await pool.query(`INSERT INTO sync_jobs (user_id) VALUES ($1)`, [user.id]);
   }
-  runWorker().catch((err) => console.error("Worker crashed", err));
+  runWorker().catch((err) => console.error("Worker crashed:", errMsg(err)));
   res.status(202).json({ ok: true });
 });
 
@@ -714,11 +778,11 @@ app.get("/api/board", async (req, res) => {
 });
 
 // "This is wrong": move a card to another column, or hide it as not a job
-app.post("/api/corrections", express.json(), async (req, res) => {
+app.post("/api/corrections", express.json({ limit: "2kb" }), async (req, res) => {
   const user = req.session?.user;
   if (!user) return res.status(401).json({ error: "Not signed in" });
   const { companyKey, stage } = req.body ?? {};
-  if (typeof companyKey !== "string" || ![...STAGES, "hidden"].includes(stage)) {
+  if (typeof companyKey !== "string" || companyKey.length === 0 || companyKey.length > 200 || ![...STAGES, "hidden"].includes(stage)) {
     return res.status(400).json({ error: "Bad correction" });
   }
   await pool.query(
@@ -740,6 +804,21 @@ app.delete("/api/corrections/:key", async (req, res) => {
   res.json({ ok: true });
 });
 
+// "Delete my data": revoke Gmail access at Google, then delete everything we hold.
+// ON DELETE CASCADE removes emails, tokens, jobs and corrections with the user row.
+app.delete("/api/account", async (req, res) => {
+  const user = req.session?.user;
+  if (!user) return res.status(401).json({ error: "Not signed in" });
+  const tokens = await getGmailTokens(user.id).catch(() => null);
+  const token = tokens?.refresh_token ?? tokens?.access_token;
+  if (token) {
+    await oauth.revokeToken(token).catch((err) => console.error("Token revoke failed:", errMsg(err)));
+  }
+  await pool.query(`DELETE FROM users WHERE id = $1`, [user.id]);
+  req.session = null;
+  res.json({ ok: true });
+});
+
 app.post("/auth/logout", (req, res) => {
   req.session = null;
   res.json({ ok: true });
@@ -751,6 +830,13 @@ if (PUBLIC_URL) {
   app.get("/*splat", (_req, res) => res.sendFile(path.join(dist, "index.html")));
 }
 
+// Last stop for any error: log the message only, never send internals to the browser
+app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error("Request failed:", errMsg(err));
+  if (res.headersSent) return;
+  res.status(500).json({ error: "Something went wrong" });
+});
+
 const PORT = Number(process.env.PORT) || 3000;
 
 async function start() {
@@ -758,10 +844,10 @@ async function start() {
   // If the server died mid-sync, put those jobs back in the queue
   await pool.query(`UPDATE sync_jobs SET status = 'queued' WHERE status = 'running'`);
   app.listen(PORT, () => console.log("API on " + API_URL));
-  runWorker().catch((err) => console.error("Worker crashed", err));
+  runWorker().catch((err) => console.error("Worker crashed:", errMsg(err)));
 }
 
 start().catch((err) => {
-  console.error("Failed to start", err);
+  console.error("Failed to start:", errMsg(err));
   process.exit(1);
 });
