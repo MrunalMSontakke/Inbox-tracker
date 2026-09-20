@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { OAuth2Client, type Credentials } from "google-auth-library";
 import { Pool } from "pg";
 import Anthropic from "@anthropic-ai/sdk";
-import { classify, classifyPreview, extractCompany, companyKey } from "./classify";
+import { classify, classifyPreview, extractCompany, companyKey, isOutcomeSubject } from "./classify";
 
 const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, SESSION_SECRET, DATABASE_URL } = process.env;
 if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !SESSION_SECRET || !DATABASE_URL) {
@@ -310,17 +310,34 @@ async function saveSecondPass(
 //   1. free rules on Gmail's preview (always)
 //   2. Claude, only for what's still unclear, and only if ANTHROPIC_API_KEY is set
 async function secondPass(userId: string, client: OAuth2Client) {
-  // Never checked yet, or checked by preview rules but still unclear (AI may now be able to help)
+  // Outcome emails that were already checked but stayed unclear: apply the "likely rejection" fallback
+  const old = await pool.query(
+    `SELECT gmail_id, subject FROM emails
+     WHERE user_id = $1 AND label = 'unclear' AND llm_label = 'unclear'`,
+    [userId]
+  );
+  await saveSecondPass(
+    userId,
+    old.rows
+      .filter((e) => isOutcomeSubject(e.subject))
+      .map((e) => ({ gmail_id: e.gmail_id, label: "rejected", company: null, source: "outcome" }))
+  );
+
+  // Emails worth a second look:
+  //  - "unclear": the subject said nothing
+  //  - "applied": friendly subjects like "Thank you for your application" often hide a rejection
+  // Plus unclear ones the preview couldn't sort, if AI is now available to try.
   const r = await pool.query(
-    `SELECT gmail_id, from_addr, subject, llm_label FROM emails
-     WHERE user_id = $1 AND label = 'unclear'
-       AND (llm_label IS NULL OR (llm_label = 'unclear' AND llm_source = 'preview'))
-     ORDER BY received_at DESC LIMIT 200`,
+    `SELECT gmail_id, from_addr, subject, label, llm_label FROM emails
+     WHERE user_id = $1 AND label IN ('unclear', 'applied')
+       AND (llm_label IS NULL OR (label = 'unclear' AND llm_label = 'unclear' AND llm_source = 'preview'))
+     ORDER BY received_at DESC LIMIT 400`,
     [userId]
   );
   // Without AI, anything already preview-checked has nothing new to learn
   const rows = anthropic ? r.rows : r.rows.filter((e) => e.llm_label === null);
   if (rows.length === 0) return;
+  const subjectLabel = new Map<string, string>(rows.map((e) => [e.gmail_id, e.label]));
 
   // Gmail's ~200 character preview. Used in memory only, never stored.
   const emails: AiInput[] = [];
@@ -340,9 +357,16 @@ async function secondPass(userId: string, client: OAuth2Client) {
   const decided: { gmail_id: string; label: string; company: string | null; source: string }[] = [];
   const stillUnclear: AiInput[] = [];
   for (const e of emails) {
-    const label = classifyPreview(e.snippet);
-    decided.push({ gmail_id: e.gmail_id, label, company: null, source: "preview" });
-    if (label === "unclear") stillUnclear.push(e);
+    let label: string = classifyPreview(e.snippet);
+    let source = "preview";
+    // Preview didn't settle it, but the subject is an "outcome/update" email: likely a rejection
+    if (label === "unclear" && isOutcomeSubject(e.subject)) {
+      label = "rejected";
+      source = "outcome";
+    }
+    decided.push({ gmail_id: e.gmail_id, label, company: null, source });
+    // AI only for emails whose subject said nothing (not for every "applied" one, to keep costs tiny)
+    if (label === "unclear" && subjectLabel.get(e.gmail_id) === "unclear") stillUnclear.push(e);
   }
   await saveSecondPass(userId, decided);
 
@@ -567,8 +591,13 @@ app.get("/api/board", async (req, res) => {
 
   const r = await pool.query(
     `SELECT gmail_id, from_addr, subject, received_at,
-       CASE WHEN label = 'unclear' AND llm_label IS NOT NULL THEN llm_label ELSE label END AS label,
-       CASE WHEN label = 'unclear' AND llm_label IS NOT NULL AND llm_label <> 'unclear'
+       -- The preview/AI answer wins when the subject said nothing, or only said "applied"
+       CASE WHEN label IN ('unclear', 'applied') AND llm_label IS NOT NULL AND llm_label NOT IN ('unclear', 'other')
+            THEN llm_label
+            WHEN label = 'unclear' AND llm_label = 'other' THEN 'other'  -- AI says it isn't about an application
+            ELSE label END AS label,
+       CASE WHEN label IN ('unclear', 'applied') AND llm_label IS NOT NULL AND llm_label NOT IN ('unclear', 'other')
+                 AND llm_label <> label
             THEN llm_source ELSE 'rules' END AS via,
        COALESCE(company, llm_company) AS company,
        COALESCE(company_key, llm_company_key) AS company_key

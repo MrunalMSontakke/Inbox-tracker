@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+// Self-hosted display font for the sign-in page: no requests to Google Fonts
+import "@fontsource-variable/bricolage-grotesque";
 
 const API = import.meta.env.PROD ? "" : "http://localhost:3000";
 
@@ -255,18 +257,7 @@ export default function App() {
   );
 }
 
-// ---------- Pieces ----------
-
-function Logo({ light = false }: { light?: boolean }) {
-  return (
-    <div className="flex items-center gap-2">
-      <div className="grid h-8 w-8 place-items-center rounded-lg bg-gradient-to-br from-sky-500 via-violet-500 to-rose-500 text-sm font-bold text-white shadow-sm">
-        IT
-      </div>
-      <span className={"font-semibold tracking-tight " + (light ? "text-white" : "text-slate-900")}>Inbox Tracker</span>
-    </div>
-  );
-}
+// ---------- Sign-in page ----------
 
 function GoogleG() {
   return (
@@ -279,97 +270,126 @@ function GoogleG() {
   );
 }
 
-// Illustration of the board on the sign-in page. Made-up companies, clearly an example.
-const PREVIEW = [
-  { title: "Applied", dot: "bg-sky-400", cards: [["Northwind", "2d ago"], ["Fabrikam", "5d ago"], ["Contoso", "Ghosted · 24d"]] },
-  { title: "Interview", dot: "bg-amber-400", cards: [["Globex", "yesterday"], ["Initech", "3d ago"]] },
-  { title: "Offer", dot: "bg-emerald-400", cards: [["Umbrella", "today"]] },
-];
+// A small copy of the real board for the sign-in page. Made-up companies, labelled as an example.
+const EXAMPLE = [
+  { stage: "applied", cards: [["Northwind", "2d ago", false], ["Fabrikam", "5d ago", false], ["Contoso", "24 days", true]] },
+  { stage: "in_review", cards: [["Tailspin", "yesterday", false], ["Litware", "3d ago", false]] },
+  { stage: "interview", cards: [["Globex", "today", false]] },
+  { stage: "offer", cards: [["Umbrella", "today", false]] },
+  { stage: "rejected", cards: [["Initech", "last week", false], ["Adatum", "2w ago", false]] },
+] as const;
 
-function BoardPreview() {
+function ExampleBoard() {
   return (
-    <div className="relative">
-      <div className="absolute -inset-6 rounded-3xl bg-gradient-to-br from-sky-500/30 via-violet-500/30 to-rose-500/30 blur-2xl" />
-      <div className="relative rotate-1 rounded-2xl border border-white/10 bg-slate-900/80 p-4 shadow-2xl backdrop-blur transition duration-500 hover:rotate-0">
-        <div className="mb-4 grid grid-cols-3 gap-2">
-          {[["24", "applications"], ["58%", "response rate"], ["6 days", "typical reply"]].map(([v, l]) => (
-            <div key={l} className="rounded-lg bg-white/5 px-3 py-2">
-              <p className="text-lg font-bold text-white">{v}</p>
-              <p className="text-[11px] text-slate-400">{l}</p>
-            </div>
-          ))}
-        </div>
-        <div className="grid grid-cols-3 gap-3">
-          {PREVIEW.map((col) => (
-            <div key={col.title} className="rounded-xl bg-white/5 p-2">
-              <p className="mb-2 flex items-center gap-1.5 px-1 text-xs font-semibold text-slate-300">
-                <span className={"h-1.5 w-1.5 rounded-full " + col.dot} />
-                {col.title}
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xl shadow-slate-900/10 sm:p-5">
+      <div className="mb-4 flex items-center justify-between">
+        <p className="text-sm font-semibold text-slate-700">Your pipeline</p>
+        <p className="text-[11px] font-medium uppercase tracking-widest text-slate-400">Example</p>
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+        {EXAMPLE.map((col) => {
+          const s = stageOf(col.stage);
+          return (
+            <div key={col.stage} className={"rounded-xl border-t-4 bg-slate-100/70 p-2 " + s.border}>
+              <p className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold text-slate-700">
+                <span className={"h-1.5 w-1.5 rounded-full " + s.dot} />
+                {s.title}
               </p>
               <div className="space-y-1.5">
-                {col.cards.map(([name, when]) => (
-                  <div key={name} className="rounded-lg bg-white/10 px-2.5 py-2">
-                    <p className="text-xs font-medium text-white">{name}</p>
-                    <p className="text-[10px] text-slate-400">{when}</p>
+                {col.cards.map(([name, when, ghosted]) => (
+                  <div key={name} className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 shadow-sm">
+                    <p className="text-xs font-medium text-slate-900">{name}</p>
+                    <p className="text-[10px] text-slate-500">{ghosted ? "Ghosted · " + when : when}</p>
                   </div>
                 ))}
               </div>
             </div>
-          ))}
-        </div>
-        <p className="mt-3 text-center text-[10px] uppercase tracking-widest text-slate-500">Example board</p>
+          );
+        })}
       </div>
     </div>
   );
 }
 
 function SignIn() {
-  const points = [
-    ["Sorts itself", "Applied, in review, interview, offer, rejected. Straight from your inbox."],
-    ["Spots ghosting", "See who never replied, and how long companies really take."],
-    ["Private by design", "Read-only. We keep sender, subject and date, never email bodies."],
-  ];
   return (
-    <div className="relative min-h-screen overflow-hidden bg-slate-950">
-      <div className="absolute -top-40 left-1/4 h-[480px] w-[720px] rounded-full bg-gradient-to-r from-sky-500/20 via-violet-500/20 to-rose-500/20 blur-3xl" />
-      <div
-        className="absolute inset-0 opacity-[0.07]"
-        style={{ backgroundImage: "radial-gradient(circle at 1px 1px, white 1px, transparent 0)", backgroundSize: "28px 28px" }}
-      />
-      <div className="relative mx-auto grid min-h-screen max-w-6xl items-center gap-16 px-6 py-16 lg:grid-cols-2">
-        <div>
-          <Logo light />
-          <h1 className="mt-10 text-4xl font-bold leading-tight tracking-tight text-white sm:text-6xl">
-            Your job hunt,
-            <br />
-            sorted{" "}
-            <span className="bg-gradient-to-r from-sky-400 via-violet-400 to-rose-400 bg-clip-text text-transparent">
-              automatically.
-            </span>
-          </h1>
-          <p className="mt-5 max-w-md text-lg text-slate-400">
-            Connect Gmail once. Every application lands on one board, and moves on its own when companies reply.
-          </p>
-          <a
-            href={API + "/auth/google"}
-            className="mt-8 inline-flex items-center gap-3 rounded-xl bg-white px-5 py-3 font-medium text-slate-900 shadow-lg shadow-violet-500/20 transition hover:-translate-y-0.5 hover:shadow-xl hover:shadow-violet-500/30"
-          >
-            <GoogleG />
-            Sign in with Google
-          </a>
-          <div className="mt-12 grid gap-5 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
-            {points.map(([title, body]) => (
-              <div key={title}>
-                <p className="text-sm font-semibold text-white">{title}</p>
-                <p className="mt-1 text-sm text-slate-400">{body}</p>
-              </div>
-            ))}
+    <div className="min-h-screen bg-white text-slate-900">
+      {/* The colour block */}
+      <section className="bg-[#123F2E] pb-40 text-[#F4EBDC] sm:pb-56">
+        <div className="mx-auto max-w-6xl px-6">
+          <header className="flex items-center justify-between py-6">
+            <span className="font-display text-lg font-extrabold uppercase tracking-wide">Inbox Tracker</span>
+            <a href={API + "/auth/google"} className="text-sm font-medium opacity-80 underline-offset-4 hover:opacity-100 hover:underline">
+              Sign in
+            </a>
+          </header>
+
+          <div className="pt-16 sm:pt-24">
+            <h1 className="font-display text-[clamp(3.25rem,10vw,8.5rem)] font-extrabold uppercase leading-[0.88] tracking-[-0.02em]">
+              Your job hunt,
+              <br />
+              on one board.
+            </h1>
+            <div className="mt-10 flex flex-col gap-8 sm:flex-row sm:items-end sm:justify-between">
+              <p className="max-w-md text-lg leading-relaxed opacity-85">
+                Connect Gmail once. Every confirmation, “we’ve viewed your application” and rejection gets sorted
+                into Applied, In review, Interview, Offer and Rejected, on its own.
+              </p>
+              <a
+                href={API + "/auth/google"}
+                className="inline-flex shrink-0 items-center gap-3 self-start rounded-full bg-[#F4EBDC] px-6 py-3.5 font-semibold text-[#123F2E] transition hover:bg-white sm:self-auto"
+              >
+                <GoogleG />
+                Continue with Google
+              </a>
+            </div>
           </div>
         </div>
-        <div className="hidden lg:block">
-          <BoardPreview />
+      </section>
+
+      {/* The board, overlapping the colour block */}
+      <section className="mx-auto -mt-28 max-w-6xl px-6 sm:-mt-40">
+        <ExampleBoard />
+      </section>
+
+      <section className="mx-auto max-w-6xl px-6 py-20">
+        <div className="grid gap-12 border-t border-slate-200 pt-12 md:grid-cols-[1fr_2fr]">
+          <h2 className="font-display text-3xl font-extrabold uppercase leading-none tracking-tight text-[#123F2E]">
+            What it reads,
+            <br />
+            and what it doesn’t.
+          </h2>
+          <div className="space-y-5 text-lg leading-relaxed text-slate-600">
+            <p>
+              It looks only for application emails from the last 90 days, and keeps just the <span className="font-semibold text-slate-900">sender, subject and date</span>.
+              Never the body. Read-only, so nothing is ever sent, moved or deleted.
+            </p>
+            <p>
+              Wrong column? Move a card in one click. Your fix holds until that company writes to you again.
+            </p>
+          </div>
         </div>
+      </section>
+
+      <footer className="border-t border-slate-200">
+        <div className="mx-auto flex max-w-6xl flex-wrap justify-between gap-4 px-6 py-8 text-sm text-slate-500">
+          <span className="font-display font-extrabold uppercase tracking-wide text-[#123F2E]">Inbox Tracker</span>
+          <span>Made in Melbourne, during a job hunt.</span>
+        </div>
+      </footer>
+    </div>
+  );
+}
+
+// ---------- Board pieces ----------
+
+function Logo() {
+  return (
+    <div className="flex items-center gap-2">
+      <div className="grid h-8 w-8 place-items-center rounded-lg bg-[#123F2E] font-display text-sm font-extrabold text-[#F4EBDC]">
+        IT
       </div>
+      <span className="font-semibold tracking-tight">Inbox Tracker</span>
     </div>
   );
 }
@@ -379,7 +399,7 @@ function ConnectGmail() {
     <div className="mx-auto max-w-lg rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
       <h2 className="text-xl font-semibold">Connect your Gmail</h2>
       <p className="mt-2 text-slate-500">
-        We look for application emails from the last 90 days and build your board. Read-only, and you can delete everything anytime.
+        We look for application emails from the last 90 days and build your board. Read-only, and we never keep email bodies.
       </p>
       <a href={API + "/auth/gmail"} className="mt-6 inline-block rounded-lg bg-slate-900 px-5 py-2.5 font-medium text-white hover:bg-slate-700">
         Connect Gmail
@@ -580,8 +600,8 @@ function Drawer({
                   <p className="mt-0.5 text-xs text-slate-500">
                     {ts.title} · {fullDate(t.received_at)}
                     {t.via !== "rules" && (
-                      <span className="ml-2 rounded bg-violet-50 px-1.5 py-0.5 text-[10px] font-semibold text-violet-600 ring-1 ring-violet-200">
-                        {t.via === "ai" ? "AI" : "from preview"}
+                      <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-600 ring-1 ring-slate-200">
+                        {t.via === "ai" ? "AI" : t.via === "outcome" ? "likely rejection" : "from preview"}
                       </span>
                     )}
                   </p>
@@ -610,7 +630,7 @@ function UnclearList({ items }: { items: Unclear[] }) {
         {items.map((e) => (
           <li key={e.gmail_id} className="flex gap-4 px-4 py-2.5">
             <span className="w-20 shrink-0 text-slate-400">{ago(e.received_at)}</span>
-            <span className="w-56 shrink-0 truncate text-slate-500">{e.from_addr.replace(/<.*>/, "").trim()}</span>
+            <span className="w-56 shrink-0 truncate text-slate-500">{e.from_addr.replace(/<.*>/, "").replace(/"/g, "").trim()}</span>
             <span className="truncate">{e.subject}</span>
           </li>
         ))}

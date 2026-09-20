@@ -105,3 +105,13 @@ export function classifyPreview(preview: string): Label {
   }
   return "unclear";
 }
+
+// "Outcome of your application", "Update on your Shell application", "Application update for X".
+// These are almost always rejections: good news usually says "interview" or "offer" in the subject.
+// Used only as a fallback, after the preview has had its say.
+const OUTCOME_SUBJECT =
+  /outcome of your application|application outcome|update on your (?:\S+ )?application|an update on your application|application (?:status )?update|your application (?:status|update)/i;
+
+export function isOutcomeSubject(subject: string) {
+  return OUTCOME_SUBJECT.test(subject);
+}
