@@ -61,3 +61,11 @@ Template:
 - Tradeoff: every server restart forces a reconnect. Fine for dev, not for users.
 - AI involvement: Claude suggested the in-memory bridge and flagged the restart problem.
 - Outcome:
+
+### D9: Move from in-memory tokens to Postgres on Neon (2026-09-20)
+- Decision: Store users and Gmail credentials in Postgres (Neon), replacing the in-memory Map from D7.
+- Why: Server restarts and Render's free-tier sleep cycle no longer log users out of Gmail.
+- Alternatives considered: Render's free Postgres, rejected because it expires 30 days after creation. Neon's free tier doesn't expire, it just pauses and auto-wakes.
+- Schema: users(id, email, name), gmail_accounts(user_id, credentials jsonb). applications and emails tables come with the sync worker next.
+- AI involvement: Claude proposed the schema and the JSONB-credentials shortcut to keep the token-refresh logic unchanged.
+- Outcome:

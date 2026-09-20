@@ -41,15 +41,15 @@ Week 3: auto-updating board, correction UI, tests, CI.
 Week 4: onboard 10 users, sit with one silently, fix what breaks, hardest-bug writeup, README with screenshot.
 
 ## Week 1 checklist
-- [ ] Public GitHub repo, first commit
-- [ ] Google Cloud project, OAuth consent screen (testing mode), add Ritik as test user
-- [ ] Verify current Google testing-mode limits in their docs
-- [ ] Sign in with Google works locally
-- [ ] Gmail connect works, read one message
-- [ ] Postgres schema v0: users, applications, emails
-- [ ] Board UI with manual cards
-- [ ] Deploy, live link in README (ugly is fine)
-- [ ] Commit small and often, spread over the week
+- [x ] Public GitHub repo, first commit
+- [x] Google Cloud project, OAuth consent screen (testing mode), add Ritik as test user
+- [x ] Verify current Google testing-mode limits in their docs
+- [x ] Sign in with Google works locally
+- [x ] Gmail connect works, read one message
+- [x ] Postgres schema v0: users, applications, emails
+- [x ] Board UI with manual cards
+- [x ] Deploy, live link in README (ugly is fine)
+- [x ] Commit small and often, spread over the week
 
 ## Receipts (what we get judged on)
 - [ ] Live link anyone can open
