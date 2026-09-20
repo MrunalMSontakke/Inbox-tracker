@@ -21,7 +21,7 @@ const GENERIC_NAMES = /^(talent|hiring|people|info|support|no-?reply)$/i;
 
 // Order matters: bad news first, so "Unfortunately... thanks for applying" is a rejection
 const RULES: [Label, RegExp][] = [
-  ["rejected", /isn['’]t progressing|not progressing|unsuccessful|unfortunately|regret to (?:inform|advise)|not (?:be )?moving forward|has closed|position has been filled|not (?:been )?selected/i],
+  ["rejected", /isn['’]t progressing|not progressing|unsuccessful|unfortunately|regret|not (?:be )?moving forward|has closed|position has been filled|not (?:been )?selected/i],
   ["offer", /job offer|offer of employment|pleased to offer/i],
   ["interview", /interview|assessment|next stage|phone screen|shortlisted/i],
   // SEEK "X has viewed your application", LinkedIn "Your application was viewed by X", Indeed "X viewed your application"
@@ -95,7 +95,7 @@ export function companyKey(name: string) {
 // For emails whose subject says nothing ("Application update"), the first line usually does.
 // Same priority as subjects: bad news first.
 const PREVIEW_RULES: [Label, RegExp][] = [
-  ["rejected", /unfortunately|unsuccessful|other candidates|not (?:be )?(?:progressing|proceeding|moving forward)|won['’]?t be (?:progressing|proceeding|moving forward)|decided (?:not to|to (?:pursue|progress|proceed|move forward) with)|no longer (?:being )?considered|not been (?:selected|successful)|position has been filled|regret to/i],
+  ["rejected", /unfortunately|unsuccessful|other candidates|not (?:be )?(?:progressing|proceeding|moving forward)|won['’]?t be (?:progressing|proceeding|moving forward)|decided (?:not to|to (?:pursue|progress|proceed|move forward) with)|no longer (?:being )?considered|not been (?:selected|successful)|position has been filled|regret to|we regret|with regret/i],
   ["offer", /pleased to offer|offer of employment|job offer/i],
   ["interview", /invite you to (?:an? )?(?:interview|assessment|chat|call|meet)|schedule (?:an? )?(?:interview|call|time)|next (?:stage|step|round)|shortlisted|online assessment|video interview|coding (?:test|challenge)/i],
   ["in_review", /currently (?:reviewing|being reviewed)|under review|(?:reviewing|review) (?:your|all) applications/i],

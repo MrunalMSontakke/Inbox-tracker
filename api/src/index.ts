@@ -135,7 +135,8 @@ const REJECTION_QUERY =
   "newer_than:90d -in:sent {" +
   '"other candidates" "other applicants" "decided to proceed with" "decided to move forward with" ' +
   '"decided not to proceed" "not be progressing" "will not be progressing" "not progressing your application" ' +
-  '"not been successful" "have not been selected" "not been selected" "regret to inform" ' +
+  '"not been successful" "have not been selected" "not been selected" ' +
+  '"regret to inform" "regret to advise" "regret to let you know" "regret to tell you" "we regret that" "with regret" ' +
   '"no longer being considered" "will not be moving forward" "won\'t be moving forward" "not moving forward with your application"' +
   "}";
 
