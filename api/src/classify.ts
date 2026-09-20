@@ -6,7 +6,8 @@ export type Label =
 const NOT_JOB_SENDERS = ["github.com", "jobscan.co"];
 
 // Subjects that are job-related but never about one of your applications
-const NOT_JOB_SUBJECTS = /profile is being discovered|job alert|new jobs for|jobs similar to|feedback for assignment/i;
+const NOT_JOB_SUBJECTS =
+  /profile is being discovered|job alert|new jobs? (?:for|similar|matching)|jobs similar to|is hiring|and more$|job['’]s expiring|recommended (?:jobs|for you)|feedback for assignment/i;
 
 // Job boards, ATS tools and test platforms: never the employer itself
 const PLATFORMS = [
@@ -20,11 +21,13 @@ const GENERIC_NAMES = /^(talent|hiring|people|info|support|no-?reply)$/i;
 
 // Order matters: bad news first, so "Unfortunately... thanks for applying" is a rejection
 const RULES: [Label, RegExp][] = [
-  ["rejected", /isn['’]t progressing|not progressing|unsuccessful|unfortunately|regret to (?:inform|advise)|not (?:be )?moving forward|has closed|position has been filled/i],
+  ["rejected", /isn['’]t progressing|not progressing|unsuccessful|unfortunately|regret to (?:inform|advise)|not (?:be )?moving forward|has closed|position has been filled|not (?:been )?selected/i],
   ["offer", /job offer|offer of employment|pleased to offer/i],
   ["interview", /interview|assessment|next stage|phone screen|shortlisted/i],
-  ["in_review", /was viewed by|has viewed your application|under review|reviewing your application/i],
-  ["applied", /application was sent|successfully submitted|thank(?:s| you) for (?:applying|your application)|received your application|application (?:submitted|received)|your application to|job application|^your .+ application$/i],
+  // SEEK "X has viewed your application", LinkedIn "Your application was viewed by X", Indeed "X viewed your application"
+  ["in_review", /was viewed by|viewed your application|under review|reviewing your application/i],
+  // Indeed confirmations: "Indeed Application: Software Engineer"
+  ["applied", /application was sent|successfully submitted|thank(?:s| you) for (?:applying|your application)|received your application|application (?:submitted|received)|your application to|job application|^indeed application:|^your .+ application$/i],
 ];
 
 export function classify(from: string, subject: string): Label {
@@ -40,7 +43,7 @@ export function classify(from: string, subject: string): Label {
 // Checked in order, first match wins
 const SUBJECT_PATTERNS = [
   /application was (?:sent to|viewed by) (.+)$/i,            // LinkedIn
-  /^(.+?) has (?:viewed|responded to) your application/i,     // SEEK
+  /^(.+?) (?:has )?(?:viewed|responded to) your application/i, // SEEK, Indeed
   /job with (.+?) has closed/i,                               // SEEK
   /thank(?:s| you) for applying to (.+)$/i,
   /your (.+?) application(?: isn|$)/i,                        // "your Accenture application isn't..."
@@ -110,8 +113,23 @@ export function classifyPreview(preview: string): Label {
 // These are almost always rejections: good news usually says "interview" or "offer" in the subject.
 // Used only as a fallback, after the preview has had its say.
 const OUTCOME_SUBJECT =
-  /outcome of your application|application outcome|update on your (?:\S+ )?application|an update on your application|application (?:status )?update|your application (?:status|update)/i;
+  /outcome of your application|application outcome|update on your (?:\S+ )?application|an update on your application|application (?:status )?update|your application (?:status|update)|^your update from/i;
 
 export function isOutcomeSubject(subject: string) {
   return OUTCOME_SUBJECT.test(subject);
+}
+
+// Company from the first line of an email, for subjects that don't name one ("Indeed Application: Developer").
+// Only trusts capitalised names, and never platforms.
+const PREVIEW_COMPANY_PATTERNS = [
+  /(?:applying|applied|[Yy]our application) (?:to|with) (?:the \S+(?: \S+)? (?:role|position) at )?([A-Z][\w&'’-]*(?: [A-Z][\w&'’-]*){0,4})/,
+  /(?:role|position|job|opportunity) (?:at|with) ([A-Z][\w&'’-]*(?: [A-Z][\w&'’-]*){0,4})/,
+];
+
+export function extractCompanyFromPreview(preview: string): string | null {
+  for (const re of PREVIEW_COMPANY_PATTERNS) {
+    const m = preview.match(re);
+    if (m) return usable(clean(m[1]));
+  }
+  return null;
 }

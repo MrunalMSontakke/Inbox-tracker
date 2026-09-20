@@ -6,7 +6,7 @@ import crypto from "node:crypto";
 import { OAuth2Client, type Credentials } from "google-auth-library";
 import { Pool } from "pg";
 import Anthropic from "@anthropic-ai/sdk";
-import { classify, classifyPreview, extractCompany, companyKey, isOutcomeSubject } from "./classify";
+import { classify, classifyPreview, extractCompany, extractCompanyFromPreview, companyKey, isOutcomeSubject } from "./classify";
 
 const { GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, SESSION_SECRET, DATABASE_URL } = process.env;
 if (!GOOGLE_CLIENT_ID || !GOOGLE_CLIENT_SECRET || !SESSION_SECRET || !DATABASE_URL) {
@@ -120,11 +120,12 @@ const MAX_MESSAGES = 500;
 const JOB_QUERY =
   "newer_than:90d -in:sent -category:promotions " +
   "-from:jobmail@s.seek.com.au -from:noreply@glassdoor.com " +
+  "-from:alert@indeed.com -from:jobalerts-noreply@linkedin.com " +
   "{subject:application subject:applications subject:applying subject:interview " +
   'subject:unfortunately subject:assessment subject:"thank you for your interest" ' +
-  'subject:"job offer" subject:"offer of employment" ' +
+  'subject:"job offer" subject:"offer of employment" subject:"your update from" ' +
   "from:greenhouse.io from:lever.co from:myworkday.com from:myworkdayjobs.com " +
-  "from:smartrecruiters.com from:ashbyhq.com from:workablemail.com from:noreply@s.seek.com.au}";
+  "from:smartrecruiters.com from:ashbyhq.com from:workablemail.com from:noreply@s.seek.com.au from:indeedapply@indeed.com}";
 
 async function gmailClientFor(userId: string) {
   const tokens = await getGmailTokens(userId);
@@ -328,7 +329,7 @@ async function secondPass(userId: string, client: OAuth2Client) {
   //  - "applied": friendly subjects like "Thank you for your application" often hide a rejection
   // Plus unclear ones the preview couldn't sort, if AI is now available to try.
   const r = await pool.query(
-    `SELECT gmail_id, from_addr, subject, label, llm_label FROM emails
+    `SELECT gmail_id, from_addr, subject, label, llm_label, company FROM emails
      WHERE user_id = $1 AND label IN ('unclear', 'applied')
        AND (llm_label IS NULL OR (label = 'unclear' AND llm_label = 'unclear' AND llm_source = 'preview'))
      ORDER BY received_at DESC LIMIT 400`,
@@ -338,6 +339,7 @@ async function secondPass(userId: string, client: OAuth2Client) {
   const rows = anthropic ? r.rows : r.rows.filter((e) => e.llm_label === null);
   if (rows.length === 0) return;
   const subjectLabel = new Map<string, string>(rows.map((e) => [e.gmail_id, e.label]));
+  const hasCompany = new Set<string>(rows.filter((e) => e.company).map((e) => e.gmail_id));
 
   // Gmail's ~200 character preview. Used in memory only, never stored.
   const emails: AiInput[] = [];
@@ -364,7 +366,9 @@ async function secondPass(userId: string, client: OAuth2Client) {
       label = "rejected";
       source = "outcome";
     }
-    decided.push({ gmail_id: e.gmail_id, label, company: null, source });
+    // No company in the subject (e.g. Indeed confirmations)? Try the preview.
+    const company = hasCompany.has(e.gmail_id) ? null : extractCompanyFromPreview(e.snippet);
+    decided.push({ gmail_id: e.gmail_id, label, company, source });
     // AI only for emails whose subject said nothing (not for every "applied" one, to keep costs tiny)
     if (label === "unclear" && subjectLabel.get(e.gmail_id) === "unclear") stillUnclear.push(e);
   }
