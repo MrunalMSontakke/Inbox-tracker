@@ -127,6 +127,18 @@ const JOB_QUERY =
   "from:greenhouse.io from:lever.co from:myworkday.com from:myworkdayjobs.com " +
   "from:smartrecruiters.com from:ashbyhq.com from:workablemail.com from:noreply@s.seek.com.au from:indeedapply@indeed.com}";
 
+// Phrases that only appear in real rejections, searched in full email bodies BY GMAIL.
+// We get back matching IDs only, never the text, so the "no bodies" rule holds.
+// Deliberately no bare "unfortunately" or "unsuccessful": confirmations often say
+// "unfortunately we can't reply to everyone" or "if you are unsuccessful you won't hear from us".
+const REJECTION_QUERY =
+  "newer_than:90d -in:sent {" +
+  '"other candidates" "other applicants" "decided to proceed with" "decided to move forward with" ' +
+  '"decided not to proceed" "not be progressing" "will not be progressing" "not progressing your application" ' +
+  '"not been successful" "have not been selected" "not been selected" "regret to inform" ' +
+  '"no longer being considered" "will not be moving forward" "won\'t be moving forward" "not moving forward with your application"' +
+  "}";
+
 async function gmailClientFor(userId: string) {
   const tokens = await getGmailTokens(userId);
   if (!tokens) throw new Error("Gmail not connected");
@@ -138,12 +150,12 @@ async function gmailClientFor(userId: string) {
   return client;
 }
 
-async function listMessageIds(client: OAuth2Client) {
+async function listMessageIds(client: OAuth2Client, query = JOB_QUERY) {
   const ids: string[] = [];
   let pageToken: string | undefined;
   do {
     const url =
-      GMAIL + "?maxResults=100&q=" + encodeURIComponent(JOB_QUERY) +
+      GMAIL + "?maxResults=100&q=" + encodeURIComponent(query) +
       (pageToken ? "&pageToken=" + pageToken : "");
     const r = await client.request<{ messages?: { id: string }[]; nextPageToken?: string }>({ url });
     for (const m of r.data.messages ?? []) ids.push(m.id);
@@ -214,7 +226,31 @@ async function syncUser(userId: string) {
   } catch (err) {
     console.error("Second pass failed", err);
   }
+
+  // After the preview pass, so a clear "invite you to interview" first line always wins
+  try {
+    await bodyRejectionPass(userId, client);
+  } catch (err) {
+    console.error("Body rejection pass failed", err);
+  }
   return ids.length;
+}
+
+// ---------- Rejections hidden deeper in the email ----------
+
+// Ask Gmail which emails contain rejection phrasing anywhere in the body.
+// Only applies to emails that look like applied / unclear / in review. Never overrides
+// a preview that clearly said interview or offer ("unfortunately we need to reschedule").
+async function bodyRejectionPass(userId: string, client: OAuth2Client) {
+  const hits = await listMessageIds(client, REJECTION_QUERY);
+  if (hits.length === 0) return;
+  await pool.query(
+    `UPDATE emails SET llm_label = 'rejected', llm_source = 'body'
+     WHERE user_id = $1 AND gmail_id = ANY($2)
+       AND label IN ('applied', 'unclear', 'in_review')
+       AND (llm_label IS NULL OR llm_label IN ('applied', 'unclear', 'in_review', 'rejected'))`,
+    [userId, hits]
+  );
 }
 
 // ---------- AI fallback for emails the rules couldn't sort ----------
@@ -596,11 +632,11 @@ app.get("/api/board", async (req, res) => {
   const r = await pool.query(
     `SELECT gmail_id, from_addr, subject, received_at,
        -- The preview/AI answer wins when the subject said nothing, or only said "applied"
-       CASE WHEN label IN ('unclear', 'applied') AND llm_label IS NOT NULL AND llm_label NOT IN ('unclear', 'other')
+       CASE WHEN label IN ('unclear', 'applied', 'in_review') AND llm_label IS NOT NULL AND llm_label NOT IN ('unclear', 'other')
             THEN llm_label
             WHEN label = 'unclear' AND llm_label = 'other' THEN 'other'  -- AI says it isn't about an application
             ELSE label END AS label,
-       CASE WHEN label IN ('unclear', 'applied') AND llm_label IS NOT NULL AND llm_label NOT IN ('unclear', 'other')
+       CASE WHEN label IN ('unclear', 'applied', 'in_review') AND llm_label IS NOT NULL AND llm_label NOT IN ('unclear', 'other')
                  AND llm_label <> label
             THEN llm_source ELSE 'rules' END AS via,
        COALESCE(company, llm_company) AS company,
