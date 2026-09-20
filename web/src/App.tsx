@@ -23,6 +23,8 @@ type Card = {
   corrected: boolean;
 };
 type Unclear = { gmail_id: string; from_addr: string; subject: string; received_at: string };
+type Accuracy = { checked: number; right: number; unanswered: number; byVia: Record<string, { checked: number; right: number }> };
+type ReviewEmail = { gmail_id: string; from_addr: string; subject: string; received_at: string; label: string; via: string };
 
 // ---------- Look and feel ----------
 
@@ -35,6 +37,18 @@ const STAGES = [
   { key: "rejected", title: "Rejected", dot: "bg-rose-500", border: "border-t-rose-500", pill: "bg-rose-50 text-rose-700 ring-rose-200" },
 ];
 const stageOf = (key: string) => STAGES.find((s) => s.key === key) ?? STAGES[0];
+
+// Answers in review mode: the five columns, plus "not a job"
+const REVIEW_CHOICES = [...STAGES.map((s) => ({ key: s.key, title: s.title })), { key: "other", title: "Not a job" }];
+const labelName = (key: string) =>
+  key === "unclear" ? "Not sure" : key === "other" ? "Not a job" : stageOf(key).title;
+const VIA_NAMES: Record<string, string> = {
+  rules: "Subject rules",
+  preview: "Email preview",
+  body: "Full-email search",
+  outcome: "Outcome fallback",
+  ai: "AI",
+};
 
 const AVATARS = [
   "bg-sky-100 text-sky-700", "bg-violet-100 text-violet-700", "bg-amber-100 text-amber-800",
@@ -83,6 +97,8 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState<Card | null>(null);
   const [hidden, setHidden] = useState(0);
+  const [accuracy, setAccuracy] = useState<Accuracy | null>(null);
+  const [reviewing, setReviewing] = useState(false);
 
   const busy = job?.status === "queued" || job?.status === "running";
 
@@ -98,6 +114,11 @@ export default function App() {
     setCards(d.cards);
     setUnclear(d.unclear);
     setHidden(d.hidden ?? 0);
+  }
+
+  async function loadAccuracy() {
+    const r = await call("/api/accuracy");
+    if (r.ok) setAccuracy(await r.json());
   }
 
   async function correct(card: Card, stage: string) {
@@ -125,6 +146,7 @@ export default function App() {
         if (d?.user) {
           loadJob();
           loadBoard();
+          loadAccuracy();
         }
       })
       .finally(() => setLoading(false));
@@ -137,7 +159,10 @@ export default function App() {
   }, [busy]);
 
   useEffect(() => {
-    if (job?.status === "done") loadBoard();
+    if (job?.status === "done") {
+      loadBoard();
+      loadAccuracy(); // rules may have changed, so re-score the checked emails
+    }
   }, [job?.status]);
 
   useEffect(() => {
@@ -212,6 +237,7 @@ export default function App() {
           <>
             <Stats cards={cards} />
             <Funnel cards={cards} />
+            <AccuracyBar accuracy={accuracy} onReview={() => setReviewing(true)} />
 
             <div className="mt-8 flex items-center justify-between gap-4">
               <h2 className="text-lg font-semibold">Your pipeline</h2>
@@ -266,6 +292,17 @@ export default function App() {
           </button>
         </footer>
       </main>
+
+      {reviewing && (
+        <ReviewPanel
+          onClose={() => {
+            setReviewing(false);
+            loadBoard();
+          }}
+          onReviewed={loadAccuracy}
+          accuracy={accuracy}
+        />
+      )}
 
       {open && (
         <Drawer
@@ -508,6 +545,154 @@ function Funnel({ cards }: { cards: Card[] }) {
             {s.title} <b className="font-semibold text-slate-700">{cards.filter((c) => c.stage === s.key).length}</b>
           </span>
         ))}
+      </div>
+    </div>
+  );
+}
+
+function AccuracyBar({ accuracy, onReview }: { accuracy: Accuracy | null; onReview: () => void }) {
+  const checked = accuracy?.checked ?? 0;
+  const pct = checked ? Math.round((accuracy!.right / checked) * 100) : null;
+  return (
+    <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm shadow-sm">
+      {pct === null ? (
+        <span className="text-slate-600">How accurate is this board? Check a few emails and find out.</span>
+      ) : (
+        <>
+          <span>
+            <b className="text-lg font-bold">{pct}%</b>{" "}
+            <span className="text-slate-600">sorted correctly, from {checked} emails you checked</span>
+          </span>
+          <span className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">
+            {Object.entries(accuracy!.byVia).map(([via, b]) => (
+              <span key={via}>
+                {VIA_NAMES[via] ?? via}: {Math.round((b.right / b.checked) * 100)}% of {b.checked}
+              </span>
+            ))}
+          </span>
+        </>
+      )}
+      <button onClick={onReview} className="ml-auto rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium hover:border-slate-500">
+        {pct === null ? "Start checking" : "Check more"}
+      </button>
+    </div>
+  );
+}
+
+function ReviewPanel({
+  onClose, onReviewed, accuracy,
+}: {
+  onClose: () => void;
+  onReviewed: () => void;
+  accuracy: Accuracy | null;
+}) {
+  // undefined = loading, null = nothing left to check
+  const [email, setEmail] = useState<ReviewEmail | null | undefined>(undefined);
+  const [done, setDone] = useState(0);
+
+  async function next() {
+    setEmail(undefined);
+    const r = await call("/api/review/next");
+    setEmail(r.ok ? (await r.json()).email : null);
+  }
+
+  async function answer(truth: string) {
+    if (!email) return;
+    await call("/api/review", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gmailId: email.gmail_id, truth }),
+    });
+    setDone((n) => n + 1);
+    onReviewed();
+    next();
+  }
+
+  useEffect(() => {
+    next();
+  }, []);
+
+  // Keyboard: Enter = the app is right, 1 to 6 = pick the right answer, Esc = close
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") return onClose();
+      if (!email) return;
+      if (e.key === "Enter" && email.label !== "unclear") return void answer(email.label);
+      const i = Number(e.key) - 1;
+      if (i >= 0 && i < REVIEW_CHOICES.length) void answer(REVIEW_CHOICES[i].key);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const total = accuracy?.checked ?? 0;
+
+  return (
+    <div className="fixed inset-0 z-40 grid place-items-center p-4">
+      <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative w-full max-w-xl rounded-2xl bg-white p-6 shadow-2xl">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Is this right?</h2>
+          <span className="text-xs text-slate-500">
+            {done} checked now · {total} in total
+          </span>
+        </div>
+
+        {email === undefined && <p className="py-12 text-center text-sm text-slate-400">Loading...</p>}
+
+        {email === null && (
+          <div className="py-10 text-center">
+            <p className="font-medium">You've checked every email.</p>
+            <p className="mt-1 text-sm text-slate-500">New ones appear after your next sync.</p>
+          </div>
+        )}
+
+        {email && (
+          <>
+            <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <p className="text-xs text-slate-500">
+                {email.from_addr.replace(/<.*>/, "").replace(/"/g, "").trim()} · {fullDate(email.received_at)}
+              </p>
+              <p className="mt-1 font-medium">{email.subject}</p>
+            </div>
+
+            <div className="mt-4 flex items-center justify-between gap-3">
+              <p className="text-sm text-slate-600">
+                We said <b className="text-slate-900">{labelName(email.label)}</b>
+                <span className="text-slate-400"> · {VIA_NAMES[email.via] ?? email.via}</span>
+              </p>
+              {email.label !== "unclear" && (
+                <button
+                  onClick={() => answer(email.label)}
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700"
+                >
+                  That's right <span className="ml-1 text-white/60">↵</span>
+                </button>
+              )}
+            </div>
+
+            <p className="mt-5 text-xs font-medium uppercase tracking-wide text-slate-500">
+              {email.label === "unclear" ? "What is it?" : "Or it's actually"}
+            </p>
+            <div className="mt-2 grid grid-cols-3 gap-2">
+              {REVIEW_CHOICES.map((c, i) => (
+                <button
+                  key={c.key}
+                  onClick={() => answer(c.key)}
+                  className="rounded-lg border border-slate-200 px-3 py-2 text-left text-sm hover:border-slate-400"
+                >
+                  <span className="mr-2 text-xs text-slate-400">{i + 1}</span>
+                  {c.title}
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+
+        <div className="mt-6 flex justify-between text-xs text-slate-400">
+          <span>Checks are private and only used to measure accuracy.</span>
+          <button onClick={onClose} className="hover:text-slate-700">Close (Esc)</button>
+        </div>
       </div>
     </div>
   );

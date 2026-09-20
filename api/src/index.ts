@@ -89,6 +89,17 @@ async function initDb() {
   await pool.query(`ALTER TABLE emails ADD COLUMN IF NOT EXISTS llm_company_key TEXT`);
   // Which second pass decided: 'preview' (free rules on Gmail's preview) or 'ai' (Claude)
   await pool.query(`ALTER TABLE emails ADD COLUMN IF NOT EXISTS llm_source TEXT`);
+  // Hand-checked answers for single emails: the ground truth for the accuracy number
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS email_reviews (
+      user_id TEXT NOT NULL,
+      gmail_id TEXT NOT NULL,
+      truth TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, gmail_id),
+      FOREIGN KEY (user_id, gmail_id) REFERENCES emails(user_id, gmail_id) ON DELETE CASCADE
+    );
+  `);
   // A user's manual fix for one card. stage is a column key, or 'hidden' for "not a job"
   await pool.query(`
     CREATE TABLE IF NOT EXISTS corrections (
@@ -675,6 +686,20 @@ app.get("/api/emails", async (req, res) => {
 
 const STAGES = ["applied", "in_review", "interview", "offer", "rejected"];
 
+// The label the board shows for an email, and which layer decided it.
+// Shared by the board and the accuracy check, so both always judge the same thing.
+// The second pass (preview / body search / outcome / AI) wins when the subject said
+// nothing, or only said "applied" / "in review".
+const EFFECTIVE_LABEL = `CASE
+    WHEN label IN ('unclear', 'applied', 'in_review') AND llm_label IS NOT NULL AND llm_label NOT IN ('unclear', 'other')
+      THEN llm_label
+    WHEN label = 'unclear' AND llm_label = 'other' THEN 'other'
+    ELSE label END`;
+const EFFECTIVE_VIA = `CASE
+    WHEN label IN ('unclear', 'applied', 'in_review') AND llm_label IS NOT NULL AND llm_label NOT IN ('unclear', 'other')
+         AND llm_label <> label
+      THEN llm_source ELSE 'rules' END`;
+
 type TimelineItem = { subject: string; received_at: string; label: string; via: string };
 type Card = {
   key: string;
@@ -697,13 +722,8 @@ app.get("/api/board", async (req, res) => {
   const r = await pool.query(
     `SELECT gmail_id, from_addr, subject, received_at,
        -- The preview/AI answer wins when the subject said nothing, or only said "applied"
-       CASE WHEN label IN ('unclear', 'applied', 'in_review') AND llm_label IS NOT NULL AND llm_label NOT IN ('unclear', 'other')
-            THEN llm_label
-            WHEN label = 'unclear' AND llm_label = 'other' THEN 'other'  -- AI says it isn't about an application
-            ELSE label END AS label,
-       CASE WHEN label IN ('unclear', 'applied', 'in_review') AND llm_label IS NOT NULL AND llm_label NOT IN ('unclear', 'other')
-                 AND llm_label <> label
-            THEN llm_source ELSE 'rules' END AS via,
+       ${EFFECTIVE_LABEL} AS label,
+       ${EFFECTIVE_VIA} AS via,
        COALESCE(company, llm_company) AS company,
        COALESCE(company_key, llm_company_key) AS company_key
      FROM emails WHERE user_id = $1 ORDER BY received_at ASC`,
@@ -802,6 +822,67 @@ app.delete("/api/corrections/:key", async (req, res) => {
     [user.id, req.params.key]
   );
   res.json({ ok: true });
+});
+
+// ---------- Accuracy check ----------
+// Review mode shows random, not-yet-checked emails with the app's current guess.
+// The user confirms or corrects it. Accuracy compares those answers with the CURRENT
+// rules, so it works as a regression test: change a rule, re-sync, see the number move.
+
+const REVIEW_LABELS = [...STAGES, "other"];
+
+app.get("/api/review/next", async (req, res) => {
+  const user = req.session?.user;
+  if (!user) return res.status(401).json({ error: "Not signed in" });
+  const r = await pool.query(
+    `SELECT e.gmail_id, e.from_addr, e.subject, e.received_at,
+            ${EFFECTIVE_LABEL} AS label, ${EFFECTIVE_VIA} AS via
+     FROM emails e
+     LEFT JOIN email_reviews v ON v.user_id = e.user_id AND v.gmail_id = e.gmail_id
+     WHERE e.user_id = $1 AND v.gmail_id IS NULL
+     ORDER BY random() LIMIT 1`,
+    [user.id]
+  );
+  res.json({ email: r.rows[0] ?? null });
+});
+
+app.post("/api/review", express.json({ limit: "2kb" }), async (req, res) => {
+  const user = req.session?.user;
+  if (!user) return res.status(401).json({ error: "Not signed in" });
+  const { gmailId, truth } = req.body ?? {};
+  if (typeof gmailId !== "string" || gmailId.length > 100 || !REVIEW_LABELS.includes(truth)) {
+    return res.status(400).json({ error: "Bad review" });
+  }
+  await pool.query(
+    `INSERT INTO email_reviews (user_id, gmail_id, truth) VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, gmail_id) DO UPDATE SET truth = EXCLUDED.truth, created_at = now()`,
+    [user.id, gmailId, truth]
+  );
+  res.json({ ok: true });
+});
+
+app.get("/api/accuracy", async (req, res) => {
+  const user = req.session?.user;
+  if (!user) return res.status(401).json({ error: "Not signed in" });
+  const r = await pool.query(
+    `SELECT v.truth, ${EFFECTIVE_LABEL} AS label, ${EFFECTIVE_VIA} AS via
+     FROM email_reviews v
+     JOIN emails e ON e.user_id = v.user_id AND e.gmail_id = v.gmail_id
+     WHERE v.user_id = $1`,
+    [user.id]
+  );
+  // "unclear" counts as a miss: the app didn't give an answer
+  const byVia: Record<string, { checked: number; right: number }> = {};
+  let right = 0;
+  for (const row of r.rows) {
+    const ok = row.label === row.truth;
+    if (ok) right++;
+    const b = (byVia[row.via] ??= { checked: 0, right: 0 });
+    b.checked++;
+    if (ok) b.right++;
+  }
+  const unanswered = r.rows.filter((x) => x.label === "unclear").length;
+  res.json({ checked: r.rows.length, right, unanswered, byVia });
 });
 
 // "Delete my data": revoke Gmail access at Google, then delete everything we hold.
